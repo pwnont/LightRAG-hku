@@ -12,6 +12,8 @@ import FileUploader from '@/components/ui/FileUploader'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { uploadDocument } from '@/api/lightrag'
+import Input from '@/components/ui/Input'
+import Text from '@/components/ui/Text'
 
 import { UploadIcon } from 'lucide-react'
 
@@ -19,10 +21,15 @@ export default function UploadDocumentsDialog() {
   const [open, setOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
+  const [groupsText, setGroupsText] = useState<string>("")
 
   const handleDocumentsUpload = useCallback(
     async (filesToUpload: File[]) => {
       setIsUploading(true)
+      const groups = groupsText
+        .split(',')
+        .map((g) => g.trim())
+        .filter((g) => g.length > 0)
 
       try {
         await Promise.all(
@@ -34,7 +41,7 @@ export default function UploadDocumentsDialog() {
                   ...pre,
                   [file.name]: percentCompleted
                 }))
-              })
+              }, groups)
               if (result.status === 'success') {
                 toast.success(`Upload Success:\n${file.name} uploaded successfully`)
               } else {
@@ -85,6 +92,15 @@ export default function UploadDocumentsDialog() {
           progresses={progresses}
           disabled={isUploading}
         />
+        <div className="flex flex-col gap-1">
+          <Text text="Groups (comma-separated)" className="ml-1" />
+          <Input
+            placeholder="e.g. team-a, internal"
+            value={groupsText}
+            onChange={(e) => setGroupsText(e.target.value)}
+            disabled={isUploading}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   )

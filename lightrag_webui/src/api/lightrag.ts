@@ -96,6 +96,8 @@ export type QueryRequest = {
   conversation_history?: Message[]
   /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
   history_turns?: number
+  /** Restrict retrieval to items tagged with any of these groups. */
+  allowed_groups?: string[]
 }
 
 export type QueryResponse = {
@@ -270,22 +272,30 @@ export const queryTextStream = async (
   }
 }
 
-export const insertText = async (text: string): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/text', { text })
+export const insertText = async (text: string, groups?: string[]): Promise<DocActionResponse> => {
+  const payload: any = { text }
+  if (groups && groups.length) payload.groups = groups
+  const response = await axiosInstance.post('/documents/text', payload)
   return response.data
 }
 
-export const insertTexts = async (texts: string[]): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/texts', { texts })
+export const insertTexts = async (texts: string[], groups?: string[]): Promise<DocActionResponse> => {
+  const payload: any = { texts }
+  if (groups && groups.length) payload.groups = groups
+  const response = await axiosInstance.post('/documents/texts', payload)
   return response.data
 }
 
 export const uploadDocument = async (
   file: File,
-  onUploadProgress?: (percentCompleted: number) => void
+  onUploadProgress?: (percentCompleted: number) => void,
+  groups?: string[]
 ): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
+  if (groups && groups.length) {
+    for (const g of groups) formData.append('groups', g)
+  }
 
   const response = await axiosInstance.post('/documents/upload', formData, {
     headers: {
@@ -305,13 +315,14 @@ export const uploadDocument = async (
 
 export const batchUploadDocuments = async (
   files: File[],
-  onUploadProgress?: (fileName: string, percentCompleted: number) => void
+  onUploadProgress?: (fileName: string, percentCompleted: number) => void,
+  groups?: string[]
 ): Promise<DocActionResponse[]> => {
   return await Promise.all(
     files.map(async (file) => {
       return await uploadDocument(file, (percentCompleted) => {
         onUploadProgress?.(file.name, percentCompleted)
-      })
+      }, groups)
     })
   )
 }

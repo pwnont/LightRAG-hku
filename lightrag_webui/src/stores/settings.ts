@@ -90,7 +90,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 3,
         hl_keywords: [],
-        ll_keywords: []
+        ll_keywords: [],
+        allowed_groups: []
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -123,7 +124,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 7,
+      version: 8,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -161,6 +162,9 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 7) {
           state.graphQueryMaxDepth = 3
           state.graphLayoutMaxIterations = 10
+        }
+        if (version < 8) {
+          state.querySettings.allowed_groups = []
         }
         return state
       }

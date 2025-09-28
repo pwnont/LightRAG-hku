@@ -88,6 +88,11 @@ class QueryRequest(BaseModel):
         description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
     )
 
+    allowed_groups: Optional[List[str]] = Field(
+        default=None,
+        description="Restrict retrieval to chunks/entities/relations tagged with any of these groups.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:

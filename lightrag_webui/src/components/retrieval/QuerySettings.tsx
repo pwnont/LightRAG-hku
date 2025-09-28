@@ -223,6 +223,29 @@ export default function QuerySettings() {
 
             {/* Toggle Options */}
             <>
+              {/* Allowed Groups */}
+              <>
+                <Text
+                  className="ml-1"
+                  text="Allowed Groups"
+                  tooltip="Restrict retrieval to items tagged with any of these groups. Separate with commas"
+                  side="left"
+                />
+                <Input
+                  id="allowed_groups"
+                  type="text"
+                  value={querySettings.allowed_groups?.join(', ') ?? ''}
+                  onChange={(e) => {
+                    const groups = e.target.value
+                      .split(',')
+                      .map((g) => g.trim())
+                      .filter((g) => g !== '')
+                    handleChange('allowed_groups', groups)
+                  }}
+                  placeholder="e.g. team-a, internal"
+                />
+              </>
+
               <div className="flex items-center gap-2">
                 <Text
                   className="ml-1"

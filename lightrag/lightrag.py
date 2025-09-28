@@ -377,20 +377,21 @@ class LightRAG:
                 self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES
             ),
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content"},
+            meta_fields={"entity_name", "source_id", "content", "groups"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS
             ),
             embedding_func=self.embedding_func,
-            meta_fields={"src_id", "tgt_id", "source_id", "content"},
+            meta_fields={"src_id", "tgt_id", "source_id", "content", "groups"},
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
             ),
             embedding_func=self.embedding_func,
+            meta_fields={"content", "full_doc_id", "tokens", "chunk_order_index", "groups"},
         )
 
         # Initialize document status storage
@@ -522,6 +523,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
+        groups: list[str] | None = None,
     ) -> None:
         """Sync Insert documents with checkpoint support
 
@@ -534,7 +536,9 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert(input, split_by_character, split_by_character_only, ids)
+            self.ainsert(
+                input, split_by_character, split_by_character_only, ids, groups
+            )
         )
 
     async def ainsert(
@@ -543,6 +547,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
+        groups: list[str] | None = None,
     ) -> None:
         """Async Insert documents with checkpoint support
 
@@ -553,7 +558,7 @@ class LightRAG:
             split_by_character is None, this parameter is ignored.
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
         """
-        await self.apipeline_enqueue_documents(input, ids)
+        await self.apipeline_enqueue_documents(input, ids, groups)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -563,14 +568,19 @@ class LightRAG:
         full_text: str,
         text_chunks: list[str],
         doc_id: str | list[str] | None = None,
+        groups: list[str] | None = None,
     ) -> None:
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
+            self.ainsert_custom_chunks(full_text, text_chunks, doc_id, groups)
         )
 
     async def ainsert_custom_chunks(
-        self, full_text: str, text_chunks: list[str], doc_id: str | None = None
+        self,
+        full_text: str,
+        text_chunks: list[str],
+        doc_id: str | None = None,
+        groups: list[str] | None = None,
     ) -> None:
         update_storage = False
         try:
@@ -601,6 +611,7 @@ class LightRAG:
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text,
                     "full_doc_id": doc_key,
+                    "groups": groups or [],
                 }
 
             doc_ids = set(inserting_chunks.keys())
@@ -612,11 +623,27 @@ class LightRAG:
                 logger.warning("All chunks are already in the storage.")
                 return
 
+            # Also persist a minimal doc_status record so group metadata is available
+            ds_upsert = self.doc_status.upsert(
+                {
+                    doc_key: {
+                        "content": full_text,
+                        "content_summary": self._get_content_summary(full_text),
+                        "content_length": len(full_text),
+                        "status": DocStatus.PROCESSED,
+                        "created_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat(),
+                        "metadata": {"groups": groups or []},
+                    }
+                }
+            )
+
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
                 self._process_entity_relation_graph(inserting_chunks),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
+                ds_upsert,
             ]
             await asyncio.gather(*tasks)
 
@@ -625,7 +652,7 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(
-        self, input: str | list[str], ids: list[str] | None = None
+        self, input: str | list[str], ids: list[str] | None = None, groups: list[str] | None = None
     ) -> None:
         """
         Pipeline for Processing Documents
@@ -676,6 +703,7 @@ class LightRAG:
                 "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
+                "metadata": {"groups": groups or []},
             }
             for id_, content in unique_contents.items()
         }
@@ -830,6 +858,7 @@ class LightRAG:
                                 compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                     **dp,
                                     "full_doc_id": doc_id,
+                                    "groups": (status_doc.metadata or {}).get("groups", []),
                                 }
                                 for dp in self.chunking_func(
                                     status_doc.content,

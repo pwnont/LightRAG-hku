@@ -11,7 +11,7 @@ import pipmaster as pm
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
@@ -31,6 +31,11 @@ class InsertTextRequest(BaseModel):
         description="The text to insert",
     )
 
+    groups: Optional[list[str]] = Field(
+        default=None,
+        description="Optional knowledge groups to tag this document with.",
+    )
+
     @field_validator("text", mode="after")
     @classmethod
     def strip_after(cls, text: str) -> str:
@@ -41,6 +46,11 @@ class InsertTextsRequest(BaseModel):
     texts: list[str] = Field(
         min_length=1,
         description="The texts to insert",
+    )
+
+    groups: Optional[list[str]] = Field(
+        default=None,
+        description="Optional knowledge groups to tag these documents with.",
     )
 
     @field_validator("texts", mode="after")
@@ -160,7 +170,9 @@ class DocumentManager:
         return any(filename.lower().endswith(ext) for ext in self.supported_extensions)
 
 
-async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
+async def pipeline_enqueue_file(
+    rag: LightRAG, file_path: Path, groups: Optional[List[str]] = None
+) -> bool:
     """Add a file to the queue for processing
 
     Args:
@@ -293,7 +305,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
         # Insert into the RAG queue
         if content:
-            await rag.apipeline_enqueue_documents(content)
+            await rag.apipeline_enqueue_documents(content, groups=groups)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
@@ -311,7 +323,9 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
     return False
 
 
-async def pipeline_index_file(rag: LightRAG, file_path: Path):
+async def pipeline_index_file(
+    rag: LightRAG, file_path: Path, groups: Optional[List[str]] = None
+):
     """Index a file
 
     Args:
@@ -319,7 +333,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path):
         file_path: Path to the saved file
     """
     try:
-        if await pipeline_enqueue_file(rag, file_path):
+        if await pipeline_enqueue_file(rag, file_path, groups):
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
@@ -327,7 +341,9 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
+async def pipeline_index_files(
+    rag: LightRAG, file_paths: List[Path], groups: Optional[List[str]] = None
+):
     """Index multiple files concurrently
 
     Args:
@@ -340,9 +356,9 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         enqueued = False
 
         if len(file_paths) == 1:
-            enqueued = await pipeline_enqueue_file(rag, file_paths[0])
+            enqueued = await pipeline_enqueue_file(rag, file_paths[0], groups)
         else:
-            tasks = [pipeline_enqueue_file(rag, path) for path in file_paths]
+            tasks = [pipeline_enqueue_file(rag, path, groups) for path in file_paths]
             enqueued = any(await asyncio.gather(*tasks))
 
         if enqueued:
@@ -352,7 +368,7 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
+async def pipeline_index_texts(rag: LightRAG, texts: List[str], groups: Optional[List[str]] = None):
     """Index a list of texts
 
     Args:
@@ -361,7 +377,7 @@ async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
     """
     if not texts:
         return
-    await rag.apipeline_enqueue_documents(texts)
+    await rag.apipeline_enqueue_documents(texts, groups=groups)
     await rag.apipeline_process_enqueue_documents()
 
 
@@ -428,7 +444,9 @@ def create_document_routes(
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        groups: Optional[List[str]] = Form(None),
     ):
         """
         Upload a file to the input directory and index it.
@@ -459,7 +477,7 @@ def create_document_routes(
                 shutil.copyfileobj(file.file, buffer)
 
             # Add to background tasks
-            background_tasks.add_task(pipeline_index_file, rag, file_path)
+            background_tasks.add_task(pipeline_index_file, rag, file_path, groups)
 
             return InsertResponse(
                 status="success",
@@ -493,7 +511,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
+            background_tasks.add_task(pipeline_index_texts, rag, [request.text], request.groups)
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -528,7 +546,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts)
+            background_tasks.add_task(pipeline_index_texts, rag, request.texts, request.groups)
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -542,7 +560,9 @@ def create_document_routes(
         "/file", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
     async def insert_file(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        groups: Optional[List[str]] = Form(None),
     ):
         """
         Insert a file directly into the RAG system.
@@ -570,7 +590,7 @@ def create_document_routes(
             temp_path = await save_temp_file(doc_manager.input_dir, file)
 
             # Add to background tasks
-            background_tasks.add_task(pipeline_index_file, rag, temp_path)
+            background_tasks.add_task(pipeline_index_file, rag, temp_path, groups)
 
             return InsertResponse(
                 status="success",
@@ -587,7 +607,9 @@ def create_document_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_batch(
-        background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)
+        background_tasks: BackgroundTasks,
+        files: List[UploadFile] = File(...),
+        groups: Optional[List[str]] = Form(None),
     ):
         """
         Process multiple files in batch mode.
@@ -621,7 +643,7 @@ def create_document_routes(
                     failed_files.append(f"{file.filename} (unsupported type)")
 
             if temp_files:
-                background_tasks.add_task(pipeline_index_files, rag, temp_files)
+                background_tasks.add_task(pipeline_index_files, rag, temp_files, groups)
 
             # Prepare status message
             if inserted_count == len(files):

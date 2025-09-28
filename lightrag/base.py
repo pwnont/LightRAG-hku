@@ -23,6 +23,7 @@ class TextChunkSchema(TypedDict):
     content: str
     full_doc_id: str
     chunk_order_index: int
+    groups: list[str] | None
 
 
 T = TypeVar("T")
@@ -80,6 +81,10 @@ class QueryParam:
 
     history_turns: int = 3
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
+
+    # Access control: restrict retrieval to specific knowledge groups
+    allowed_groups: list[str] = field(default_factory=list)
+    """If non-empty, only use chunks/entities/relations whose groups intersect this list."""
 
 
 @dataclass

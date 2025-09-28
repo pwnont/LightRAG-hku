@@ -561,12 +561,27 @@ async def extract_entities(
     verbose_debug(f"New relationships:{all_relationships_data}")
 
     if entity_vdb is not None:
+        # Build chunk_id -> groups mapping
+        chunk_groups_map = {
+            chunk_id: (chunk_data.get("groups", []) if isinstance(chunk_data, dict) else [])
+            for chunk_id, chunk_data in chunks.items()
+        }
+
+        def collect_groups_from_source(source_id: str) -> list[str]:
+            ids = split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]) if source_id else []
+            groups: set[str] = set()
+            for cid in ids:
+                for g in chunk_groups_map.get(cid, []):
+                    groups.add(g)
+            return sorted(groups)
+
         data_for_vdb = {
             compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
                 "entity_name": dp["entity_name"],
                 "entity_type": dp["entity_type"],
                 "content": f"{dp['entity_name']}\n{dp['description']}",
                 "source_id": dp["source_id"],
+                "groups": collect_groups_from_source(dp.get("source_id", "")),
                 "metadata": {
                     "created_at": dp.get("metadata", {}).get("created_at", time.time())
                 },
@@ -583,6 +598,7 @@ async def extract_entities(
                 "keywords": dp["keywords"],
                 "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
                 "source_id": dp["source_id"],
+                "groups": collect_groups_from_source(dp.get("source_id", "")),
                 "metadata": {
                     "created_at": dp.get("metadata", {}).get("created_at", time.time())
                 },
@@ -899,6 +915,18 @@ async def mix_kg_vector_query(
             chunks_ids = [r["id"] for r in results]
             chunks = await text_chunks_db.get_by_ids(chunks_ids)
 
+            # Access control: filter by allowed groups if provided
+            if getattr(query_param, "allowed_groups", []):
+                allowed = set(query_param.allowed_groups)
+                filtered = []
+                filtered_results = []
+                for chunk, result in zip(chunks, results):
+                    if chunk is not None and allowed.intersection(set(chunk.get("groups", []))):
+                        filtered.append(chunk)
+                        filtered_results.append(result)
+                chunks = filtered
+                results = filtered_results
+
             valid_chunks = []
             for chunk, result in zip(chunks, results):
                 if chunk is not None and "content" in chunk:
@@ -1101,6 +1129,12 @@ async def _get_node_data(
         f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
     )
     results = await entities_vdb.query(query, top_k=query_param.top_k)
+    # Access control: filter by allowed groups if provided
+    if getattr(query_param, "allowed_groups", []):
+        allowed = set(query_param.allowed_groups)
+        results = [
+            r for r in results if allowed.intersection(set(r.get("groups", [])))
+        ]
     if not len(results):
         return "", "", ""
     # get entity information
@@ -1273,6 +1307,13 @@ async def _find_most_related_text_unit_from_entities(
         if v is not None and v.get("data") is not None and "content" in v["data"]
     ]
 
+    # Access control: filter by allowed groups if provided
+    if getattr(query_param, "allowed_groups", []):
+        allowed = set(query_param.allowed_groups)
+        all_text_units = [
+            t for t in all_text_units if allowed.intersection(set(t["data"].get("groups", [])))
+        ]
+
     if not all_text_units:
         logger.warning("No valid text units found")
         return []
@@ -1351,6 +1392,12 @@ async def _get_edge_data(
         f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
     )
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    # Access control: filter by allowed groups if provided
+    if getattr(query_param, "allowed_groups", []):
+        allowed = set(query_param.allowed_groups)
+        results = [
+            r for r in results if allowed.intersection(set(r.get("groups", [])))
+        ]
 
     if not len(results):
         return "", "", ""
@@ -1536,6 +1583,12 @@ async def _find_related_text_unit_from_relationships(
         return []
 
     all_text_units = [{"id": k, **v} for k, v in all_text_units_lookup.items()]
+    # Access control: filter by allowed groups if provided
+    if getattr(query_param, "allowed_groups", []):
+        allowed = set(query_param.allowed_groups)
+        all_text_units = [
+            t for t in all_text_units if t["data"] is not None and allowed.intersection(set(t["data"].get("groups", [])))
+        ]
     all_text_units = sorted(all_text_units, key=lambda x: x["order"])
 
     # Ensure all text chunks have content
@@ -1605,6 +1658,13 @@ async def naive_query(
 
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
+
+    # Access control: filter by allowed groups if provided
+    if getattr(query_param, "allowed_groups", []):
+        allowed = set(query_param.allowed_groups)
+        chunks = [
+            c for c in chunks if c is not None and allowed.intersection(set(c.get("groups", [])))
+        ]
 
     # Filter out invalid chunks
     valid_chunks = [
